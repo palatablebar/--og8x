@@ -16,6 +16,10 @@ class MetricVersion(Base):
     team_id: Mapped[int] = mapped_column(ForeignKey("owner_teams.id"), nullable=False, index=True)
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
     dsl_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Complete dependency set declared by this version's `using (...)` clause
+    # (sorted metric keys). Persisted together with the version so every caliber
+    # version is self-describing and a rollback restores its exact edges.
+    dependencies_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     agg: Mapped[str | None] = mapped_column(String(32), nullable=True)
     measure: Mapped[str | None] = mapped_column(String(120), nullable=True)
     source_table: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -31,6 +35,12 @@ class MetricVersion(Base):
 
     metric = relationship("MetricDefinition", back_populates="versions")
     team = relationship("OwnerTeam", back_populates="versions")
+    dependencies = relationship(
+        "MetricDependency",
+        back_populates="version",
+        foreign_keys="MetricDependency.version_id",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<MetricVersion metric={self.metric_id} v{self.version_no}>"

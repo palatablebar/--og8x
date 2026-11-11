@@ -32,6 +32,7 @@ def serialize_version(version: MetricVersion | None, team: OwnerTeam | None = No
         "parse_status": version.parse_status,
         "parse_error": version.parse_error,
         "is_current": bool(version.is_current),
+        "dependencies": list(version.dependencies_json or []),
         "effective_from": iso(version.effective_from),
         "created_by": version.created_by,
         "created_at": iso(version.created_at),
@@ -155,8 +156,13 @@ def get_metric_detail(db: Session, metric_id: int) -> dict:
     data = serialize_metric(metric, list(versions), teams)
     data["versions"] = [serialize_version(version, teams.get(version.team_id)) for version in versions]
 
-    outgoing = db.scalars(select(MetricDependency).where(MetricDependency.from_metric_id == metric.id)).all()
-    incoming = db.scalars(select(MetricDependency).where(MetricDependency.to_metric_id == metric.id)).all()
+    # Dependencies reflect the metric's *current* version snapshot (plus manual
+    # physical-table edges), so switching versions changes what is shown here.
+    from app.services.dependency_version_service import active_edges_for_metric, incoming_active_edges
+
+    current = next((version for version in reversed(list(versions)) if version.is_current), None)
+    outgoing = active_edges_for_metric(db, metric.id)
+    incoming = incoming_active_edges(db, metric.id)
     upstream_metrics: list[dict] = []
     tables: list[dict] = []
     for edge in outgoing:
@@ -172,10 +178,21 @@ def get_metric_detail(db: Session, metric_id: int) -> dict:
                         "domain": target.domain,
                         "relation": edge.relation,
                         "note": edge.note,
+                        "version_id": edge.version_id,
+                        "version_no": current.version_no if current and edge.version_id == current.id else None,
                     }
                 )
         elif edge.to_table:
-            tables.append({"edge_id": edge.id, "table": edge.to_table, "relation": edge.relation, "note": edge.note})
+            tables.append(
+                {
+                    "edge_id": edge.id,
+                    "table": edge.to_table,
+                    "relation": edge.relation,
+                    "note": edge.note,
+                    "version_id": None,
+                    "version_no": None,
+                }
+            )
     downstream_metrics: list[dict] = []
     for edge in incoming:
         if edge.from_metric_id:
@@ -192,6 +209,8 @@ def get_metric_detail(db: Session, metric_id: int) -> dict:
                     }
                 )
     data["dependencies"] = {
+        "current_version_id": current.id if current else None,
+        "current_version_no": current.version_no if current else None,
         "upstream": upstream_metrics,
         "downstream": downstream_metrics,
         "tables": tables,

@@ -26,7 +26,6 @@ from app.models import (
     ConflictFinding,
     ConsistencyCheck,
     MetricDefinition,
-    MetricDependency,
     MetricVersion,
     User,
 )
@@ -63,11 +62,21 @@ def _metric_dict(metric: MetricDefinition) -> dict:
 
 
 def _load_graph_inputs(db: Session):
+    """Graph inputs projected from each metric's *current version* dependency
+    snapshot, so removed upstreams and historical versions cannot create phantom
+    edges or non-existent cycles."""
+    from app.services.dependency_version_service import active_dsl_edges
+
     metrics = db.scalars(select(MetricDefinition)).all()
-    edges = db.scalars(select(MetricDependency)).all()
+    edges = active_dsl_edges(db)
     metric_dicts = [_metric_dict(metric) for metric in metrics]
     edge_dicts = [
-        {"from_id": edge.from_metric_id, "to_id": edge.to_metric_id, "relation": edge.relation}
+        {
+            "from_id": edge.from_metric_id,
+            "to_id": edge.to_metric_id,
+            "relation": edge.relation,
+            "version_id": edge.version_id,
+        }
         for edge in edges
     ]
     return metric_dicts, edge_dicts
@@ -189,122 +198,147 @@ def execute_check(check_id: int) -> dict:
         db.commit()
         log_event("CHECK_STARTED", batch=check.batch_no, check_id=check.id)
 
-        metric_query = select(MetricDefinition).order_by(MetricDefinition.metric_key)
-        if check.scope != "all":
-            metric_query = metric_query.where(MetricDefinition.domain == check.scope)
-        metrics = list(db.scalars(metric_query).all())
-        metric_by_key = {metric.metric_key: metric for metric in metrics}
+        # Everything below (re-parsed tuples, findings, summary) is one unit of
+        # work: any failure rolls the whole batch back to a clean failed marker
+        # instead of leaving partial findings or half-updated versions.
+        try:
+            metric_query = select(MetricDefinition).order_by(MetricDefinition.metric_key)
+            if check.scope != "all":
+                metric_query = metric_query.where(MetricDefinition.domain == check.scope)
+            metrics = list(db.scalars(metric_query).all())
+            metric_by_key = {metric.metric_key: metric for metric in metrics}
 
-        groups: list[list[dict]] = []
-        parse_failed: list[dict] = []
-        versions_checked = 0
-        for metric in metrics:
-            versions = list(
-                db.scalars(
-                    select(MetricVersion)
-                    .where(MetricVersion.metric_id == metric.id)
-                    .order_by(MetricVersion.version_no)
-                ).all()
-            )
-            versions_checked += len(versions)
-            parsed_versions: list[dict] = []
-            for version in versions:
-                parsed = parse_dsl(version.dsl_text)
-                if parsed["ok"]:
-                    version.agg = parsed["agg"]
-                    version.measure = parsed["measure"]
-                    version.source_table = parsed["source_table"]
-                    version.filters_json = parsed["filters"]
-                    version.window = parsed["window"]
-                    version.grain = parsed["grain"]
-                    version.parse_status = "ok"
-                    version.parse_error = None
-                    parsed_versions.append(
-                        {
-                            "id": version.id,
-                            "version_no": version.version_no,
-                            "metric_key": metric.metric_key,
-                            "team_id": version.team_id,
-                            **version_tuple(parsed["tuple"]),
-                        }
-                    )
-                else:
-                    version.parse_status = "error"
-                    version.parse_error = parsed["error"]
-                    parse_failed.append(
-                        {
-                            "metric_key": metric.metric_key,
-                            "version_no": version.version_no,
-                            "error": parsed["error"],
-                            "offset": parsed["error_offset"],
-                        }
-                    )
-            # only >=2 successfully parsed versions can conflict
-            if len(parsed_versions) >= 2:
-                groups.append(parsed_versions)
-
-        findings_data: list[dict] = []
-        for versions in groups:
-            metric = metric_by_key[versions[0]["metric_key"]]
-            findings_data.extend(build_findings(_metric_dict(metric), versions))
-
-        graph_metrics, graph_edges = _load_graph_inputs(db)
-        graph = build_graph(graph_metrics, [edge for edge in graph_edges if edge["to_id"]])
-
-        impact_cache: dict[int, dict] = {}
-        for finding in findings_data:
-            metric_id = finding["metric_id"]
-            if metric_id not in impact_cache:
-                impact_cache[metric_id] = impact_closure(
-                    metric_id, graph_metrics, [edge for edge in graph_edges if edge["to_id"]]
+            groups: list[list[dict]] = []
+            parse_failed: list[dict] = []
+            versions_checked = 0
+            for metric in metrics:
+                versions = list(
+                    db.scalars(
+                        select(MetricVersion)
+                        .where(MetricVersion.metric_id == metric.id)
+                        .order_by(MetricVersion.version_no)
+                    ).all()
                 )
-            finding["impact"] = impact_cache[metric_id]
-            finding["status"] = FindingStatus.OPEN.value
+                versions_checked += len(versions)
+                parsed_versions: list[dict] = []
+                for version in versions:
+                    parsed = parse_dsl(version.dsl_text)
+                    if parsed["ok"]:
+                        version.agg = parsed["agg"]
+                        version.measure = parsed["measure"]
+                        version.source_table = parsed["source_table"]
+                        version.filters_json = parsed["filters"]
+                        version.window = parsed["window"]
+                        version.grain = parsed["grain"]
+                        version.parse_status = "ok"
+                        version.parse_error = None
+                        parsed_versions.append(
+                            {
+                                "id": version.id,
+                                "version_no": version.version_no,
+                                "metric_key": metric.metric_key,
+                                "team_id": version.team_id,
+                                **version_tuple(parsed["tuple"]),
+                            }
+                        )
+                    else:
+                        version.parse_status = "error"
+                        version.parse_error = parsed["error"]
+                        parse_failed.append(
+                            {
+                                "metric_key": metric.metric_key,
+                                "version_no": version.version_no,
+                                "error": parsed["error"],
+                                "offset": parsed["error_offset"],
+                            }
+                        )
+                # only >=2 successfully parsed versions can conflict
+                if len(parsed_versions) >= 2:
+                    groups.append(parsed_versions)
 
-        db.execute(delete(ConflictFinding).where(ConflictFinding.check_id == check.id))
-        for finding in findings_data:
-            db.add(
-                ConflictFinding(
-                    check_id=check.id,
-                    metric_id=finding["metric_id"],
-                    metric_key=finding["metric_key"],
-                    conflict_type=finding["conflict_type"],
-                    severity=finding["severity"],
-                    version_a_id=finding["version_a_id"],
-                    version_b_id=finding["version_b_id"],
-                    dimensions_json=finding["dimensions"],
-                    evidence_json=finding["evidence"],
-                    impact_json=finding["impact"],
-                    detail=finding["detail"],
-                    status=finding["status"],
+            findings_data: list[dict] = []
+            for versions in groups:
+                metric = metric_by_key[versions[0]["metric_key"]]
+                findings_data.extend(build_findings(_metric_dict(metric), versions))
+
+            # Idempotency guard for the same batch: collapse any logically
+            # identical (version pair + conflict type) rows before insert. The
+            # DB unique constraint uq_finding_batch_pair_type is the hard backstop.
+            deduped: dict[tuple, dict] = {}
+            for finding in findings_data:
+                key = (
+                    check.id,
+                    finding["version_a_id"],
+                    finding["version_b_id"],
+                    finding["conflict_type"],
                 )
-            )
+                deduped.setdefault(key, finding)
+            findings_data = list(deduped.values())
 
-        scored = overall_score(groups)
-        high_count = sum(1 for finding in findings_data if finding["severity"] == "high")
-        check.metrics_checked = len(metrics)
-        check.versions_checked = versions_checked
-        check.conflict_count = len(findings_data)
-        check.high_count = high_count
-        check.consistency_score = int(scored["score"])
-        check.summary_json = {
-            "score": scored["score"],
-            "pairs_compared": scored["pairs_compared"],
-            "metric_scores": scored["metric_scores"],
-            "metrics_with_multiple_versions": len(groups),
-            "cycles": [
-                {"member_keys": cycle["member_keys"], "path_keys": cycle["path_keys"]} for cycle in graph["cycles"]
-            ],
-            "orphans": graph["orphans"],
-            "topological_order": graph["topological_order"],
-            "graph_stats": graph["stats"],
-            "parse_failed": parse_failed,
-            "findings_by_dimension": _count_dimensions(findings_data),
-        }
-        check.status = CheckStatus.COMPLETED.value
-        check.finished_at = datetime.now()
-        check.error_message = None
-        db.commit()
+            graph_metrics, graph_edges = _load_graph_inputs(db)
+            graph = build_graph(graph_metrics, [edge for edge in graph_edges if edge["to_id"]])
+
+            impact_cache: dict[int, dict] = {}
+            for finding in findings_data:
+                metric_id = finding["metric_id"]
+                if metric_id not in impact_cache:
+                    impact_cache[metric_id] = impact_closure(
+                        metric_id, graph_metrics, [edge for edge in graph_edges if edge["to_id"]]
+                    )
+                finding["impact"] = impact_cache[metric_id]
+                finding["status"] = FindingStatus.OPEN.value
+
+            db.execute(delete(ConflictFinding).where(ConflictFinding.check_id == check.id))
+            for finding in findings_data:
+                db.add(
+                    ConflictFinding(
+                        check_id=check.id,
+                        metric_id=finding["metric_id"],
+                        metric_key=finding["metric_key"],
+                        conflict_type=finding["conflict_type"],
+                        severity=finding["severity"],
+                        version_a_id=finding["version_a_id"],
+                        version_b_id=finding["version_b_id"],
+                        dimensions_json=finding["dimensions"],
+                        evidence_json=finding["evidence"],
+                        impact_json=finding["impact"],
+                        detail=finding["detail"],
+                        status=finding["status"],
+                    )
+                )
+
+            scored = overall_score(groups)
+            high_count = sum(1 for finding in findings_data if finding["severity"] == "high")
+            check.metrics_checked = len(metrics)
+            check.versions_checked = versions_checked
+            check.conflict_count = len(findings_data)
+            check.high_count = high_count
+            check.consistency_score = int(scored["score"])
+            check.summary_json = {
+                "score": scored["score"],
+                "pairs_compared": scored["pairs_compared"],
+                "metric_scores": scored["metric_scores"],
+                "metrics_with_multiple_versions": len(groups),
+                "cycles": [
+                    {"member_keys": cycle["member_keys"], "path_keys": cycle["path_keys"]}
+                    for cycle in graph["cycles"]
+                ],
+                "orphans": graph["orphans"],
+                "topological_order": graph["topological_order"],
+                "graph_stats": graph["stats"],
+                "parse_failed": parse_failed,
+                "findings_by_dimension": _count_dimensions(findings_data),
+            }
+            check.status = CheckStatus.COMPLETED.value
+            check.finished_at = datetime.now()
+            check.error_message = None
+            db.commit()
+        except Exception:
+            # Discard every partial write of this run; the batch becomes a
+            # clean FAILED marker rather than a half-populated version.
+            db.rollback()
+            raise
+
         log_event(
             "CHECK_FINISHED",
             batch=check.batch_no,
@@ -314,7 +348,6 @@ def execute_check(check_id: int) -> dict:
             score=check.consistency_score,
         )
         summary = serialize_check(check)
-        release_check_lock(check.scope)
         db.close()
         return summary
     except Exception as exc:
@@ -329,6 +362,7 @@ def execute_check(check_id: int) -> dict:
         db.close()
         raise
     finally:
+        release_check_lock(check.scope)
         try:
             db.close()
         except Exception:

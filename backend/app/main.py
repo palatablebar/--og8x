@@ -87,6 +87,7 @@ def index() -> dict:
             "/metrics",
             "/metrics/{id}",
             "/metrics/{id}/versions",
+            "/versions/{id}/activate",
             "/metrics/{id}/compare",
             "/dsl/parse",
             "/dependencies/graph",

@@ -26,6 +26,7 @@ export interface MetricVersion {
   parse_status: string
   parse_error: string | null
   is_current: boolean
+  dependencies: string[]
   effective_from: string | null
   created_by: string | null
   created_at: string | null
@@ -40,6 +41,8 @@ export interface DependencyRef {
   domain: string
   relation: string
   note?: string
+  version_id: number | null
+  version_no: number | null
 }
 
 export interface TableRef {
@@ -47,6 +50,8 @@ export interface TableRef {
   table: string
   relation: string
   note?: string
+  version_id: null
+  version_no: null
 }
 
 export interface Metric {
@@ -69,6 +74,8 @@ export interface Metric {
 export interface MetricDetail extends Metric {
   versions: MetricVersion[]
   dependencies: {
+    current_version_id: number | null
+    current_version_no: number | null
     upstream: DependencyRef[]
     downstream: DependencyRef[]
     tables: TableRef[]

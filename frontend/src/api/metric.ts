@@ -38,6 +38,10 @@ export function compareVersions(metricId: number, versionA: number, versionB: nu
   return http.get<Record<string, unknown>>(`/metrics/${metricId}/compare?version_a=${versionA}&version_b=${versionB}`)
 }
 
+export function activateVersion(versionId: number) {
+  return http.post<MetricVersion>(`/versions/${versionId}/activate`, {})
+}
+
 export function fetchTeams() {
   return http.get<{ items: import('../types/user').OwnerTeam[] }>('/teams')
 }

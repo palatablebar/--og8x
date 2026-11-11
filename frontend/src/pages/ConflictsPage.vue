@@ -83,6 +83,10 @@
           <div class="index-card is-flat">
             <div class="eyebrow">cycles · orphans</div>
             <h3 class="card-title mt-1">同批次结构问题</h3>
+            <p class="hint mt-1">
+              基于批次运行时各指标「当前生效版本」的依赖集合计算（{{ store.detail.summary.graph_stats.edge_count }} 条当前版本边 /
+              {{ store.detail.summary.graph_stats.node_count }} 个节点）；历史版本与已删除的 using 上游不会产生幽灵环。
+            </p>
             <div class="mt-2">
               <div class="label">环依赖</div>
               <ul class="clean-list mt-1">

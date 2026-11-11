@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.config.database import Base
@@ -8,6 +8,17 @@ from app.config.database import Base
 
 class ConflictFinding(Base):
     __tablename__ = "conflict_findings"
+    __table_args__ = (
+        # One logical conflict per batch/version-pair/conflict-type: re-running
+        # the same check batch must never insert duplicate conflicts.
+        UniqueConstraint(
+            "check_id",
+            "version_a_id",
+            "version_b_id",
+            "conflict_type",
+            name="uq_finding_batch_pair_type",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     check_id: Mapped[int] = mapped_column(ForeignKey("consistency_checks.id"), nullable=False, index=True)

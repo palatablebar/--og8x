@@ -56,5 +56,34 @@ def update_version(request: Request, db: Session, user: User, version_id: int, p
     return metric_service.serialize_version(version, team)
 
 
+def activate_version(request: Request, db: Session, user: User, version_id: int) -> dict:
+    """Switch the metric's current version (rollback included); the dependency
+    graph and impact surface follow the activated version's stored edges."""
+    version = version_service.get_version_or_404(db, version_id)
+    before_version = next(
+        (
+            row
+            for row in version_service.versions_for_metric(db, version.metric_id)
+            if row.is_current and row.id != version.id
+        ),
+        None,
+    )
+    version = version_service.activate_version(db, user, version)
+    team = _team(db, version.team_id)
+    audit_logger.record(
+        request,
+        "VERSION_ACTIVATED",
+        "metric_version",
+        version.id,
+        before={"current_version_id": before_version.id if before_version else None},
+        after={
+            "current_version_id": version.id,
+            "version_no": version.version_no,
+            "dependencies": list(version.dependencies_json or []),
+        },
+    )
+    return metric_service.serialize_version(version, team)
+
+
 def compare(db: Session, metric_id: int, version_a_id: int, version_b_id: int) -> dict:
     return version_service.compare_versions(db, metric_id, version_a_id, version_b_id)

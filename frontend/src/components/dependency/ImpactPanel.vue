@@ -5,6 +5,9 @@
       <span v-if="impact" class="faint small">{{ impact.affected_metric_count }} 个下游指标 · {{ impact.board_count }} 个看板</span>
     </div>
     <h3 class="section-title mt-1" style="font-size: 16px">{{ title }}</h3>
+    <p v-if="impact && impact.version_no" class="hint mt-1">
+      按当前生效 v{{ impact.version_no }} 的依赖集合计算反向依赖闭包；切换版本后影响面随之变化。
+    </p>
     <p v-if="loading" class="hint mt-2">计算依赖闭包中…</p>
     <template v-else-if="impact">
       <div class="impact-grid mt-2">

@@ -3,6 +3,7 @@ LOG_TEMPLATES = {
     "METRIC_CREATED": "metric={metric} team={team} actor={actor}",
     "METRIC_UPDATED": "metric={metric} fields={fields} actor={actor}",
     "VERSION_CREATED": "metric={metric} version={version} team={team} agg={agg} grain={grain} window={window}",
+    "VERSION_ACTIVATED": "metric={metric} version={version} deps=[{deps}] actor={actor}",
     "VERSION_DSL_REJECTED": "metric={metric} error={error}",
     "CHECK_CREATED": "batch={batch} scope={scope} actor={actor}",
     "CHECK_DISPATCHED": "batch={batch} task_id={task_id}",

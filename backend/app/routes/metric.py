@@ -91,6 +91,16 @@ def update_version(
     return version_controller.update_version(request, db, user, version_id, payload)
 
 
+@router.post("/versions/{version_id}/activate")
+def activate_version(
+    request: Request,
+    version_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(WRITER),
+):
+    return version_controller.activate_version(request, db, user, version_id)
+
+
 @router.post("/dsl/parse")
 def parse_dsl(payload: DslParseRequest, _user: User = Depends(get_current_user)):
     return metric_controller.parse_dsl_preview(payload)

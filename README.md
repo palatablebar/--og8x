@@ -25,7 +25,9 @@
 
 ## 3. 核心实体（6）
 
-`MetricDefinition`（指标 key/域/负责团队/状态）· `MetricVersion`（版本号/DSL/五元组/生效时间，可跨团队）· `MetricDependency`（指标→指标 / 指标→物理表）· `ConsistencyCheck`（批次/状态/分数/汇总）· `ConflictFinding`（冲突维度/严重度/证据/影响面）· `OwnerTeam`（团队/域/负责人/SLA）。另有 `User` 与 `AuditLog` 作为横切支撑。
+`MetricDefinition`（指标 key/域/负责团队/状态）· `MetricVersion`（版本号/DSL/五元组/生效时间/完整 using 依赖集合，可跨团队）· `MetricDependency`（指标→指标 / 指标→物理表；DSL 边带 `version_id` 归属到具体版本）· `ConsistencyCheck`（批次/状态/分数/汇总）· `ConflictFinding`（冲突维度/严重度/证据/影响面，批次内按版本对+冲突类型唯一）· `OwnerTeam`（团队/域/负责人/SLA）。另有 `User` 与 `AuditLog` 作为横切支撑。
+
+每个版本保存**完整依赖集合**（`MetricVersion.dependencies_json`），DSL 边通过 `MetricDependency.version_id` 归属到该版本；依赖图、影响面与一致性检查只投影各指标**当前生效版本**的边（物理表边为人工登记，始终保留）。切换/回切当前版本（`POST /versions/{id}/activate`）即恢复对应依赖，已从表达式删除的上游不会残留、也不会再报幽灵环。
 
 ## 4. 两个后端真算算法
 
@@ -41,7 +43,8 @@ metric active_users = count(distinct user_id) from fact_visit
 
 - 输出五元组 `(agg, measure, filter 集合, window, grain)` + 源码 token 位置（编辑器高亮）+ `using` 依赖预览；
 - `where date >= today-N` 在缺少 `window` 时推导窗口；非法聚合/粒度/自依赖返回带 offset 的语义错误；
-- `backend/app/algorithms/graph.py`：Kahn 拓扑排序（依赖在前）、Tarjan SCC 找环并给出环路径、孤儿指标检测（无下游消费且无 BI 看板）、分层坐标供手写 SVG。
+- 保存版本时把该版本 `using` 的**完整依赖集合**连同五元组在一个事务内落库（版本行 + 依赖快照同生共死，解析/提交失败不会留下半截版本）；依赖边按版本全量替换，删掉的上游同步移除；
+- `backend/app/algorithms/graph.py`：Kahn 拓扑排序（依赖在前）、Tarjan SCC 找环并给出环路径、孤儿指标检测（无下游消费且无 BI 看板）、分层坐标供手写 SVG。图与影响面只取当前生效版本的依赖边，回切历史版本即恢复其依赖结构。
 
 ### 4.2 口径冲突检测 + 影响面
 
@@ -49,18 +52,18 @@ metric active_users = count(distinct user_id) from fact_visit
 
 - 同名指标多版本按五元组两两比较，差异维度严重度：`grain/filter/agg = high`、`window = medium`、`measure = low`，多维差异归为 `multi`；
 - 一致性分数 `100 × (1 − Σ各对差异权重 / (对比对数 × 12))`，权重 high=3 / medium=2 / low=1；
-- 影响面 = 反向依赖闭包（受影响指标）+ 这些指标登记的 BI 看板，随 finding 落库并可导出 CSV。
+- 影响面 = 反向依赖闭包（受影响指标）+ 这些指标登记的 BI 看板，随 finding 落库并可导出 CSV；影响面基于当前生效版本的依赖集合计算，随版本切换而变化。
 
-批次执行链路：`POST /checks`（backend 创建 pending 批次，扣减每日检查配额，Redis 加 scope 锁）→ Celery worker `metricd.run_consistency_check` → 重新解析全部 DSL、更新版本五元组、写 `ConflictFinding` 与批次汇总 → 前端轮询显示分数/环/孤儿/冲突。
+批次执行链路：`POST /checks`（backend 创建 pending 批次，扣减每日检查配额，Redis 加 scope 锁）→ Celery worker `metricd.run_consistency_check` → 重新解析全部 DSL、更新版本五元组、基于当前版本依赖图写 `ConflictFinding` 与批次汇总 → 前端轮询显示分数/环/孤儿/冲突。整批计算在单事务内提交，失败只留 FAILED 标记、不产生半截 finding；`conflict_findings` 上有 `(check_id, version_a_id, version_b_id, conflict_type)` 唯一约束，同一批次重复执行不会新增重复冲突。
 
 ## 5. 6 个页面
 
 1. `/login` 登录（索引卡 + 三角色快捷填充）
 2. `/catalog` 指标目录（域分组 + 搜索 + 状态徽标 + 五元组速览）
-3. `/metrics/:id` 指标详情与版本历史（五元组比对、依赖、影响面）
+3. `/metrics/:id` 指标详情与版本历史（五元组比对、每版本依赖集合、当前版本依赖与影响面、一键切换/回切版本并核对依赖变化）
 4. `/metrics/:id/dsl` DSL 编辑器（实时后端解析 + token 高亮 + 依赖预览 + 保存新版本）
-5. `/graph` 依赖图（手写 SVG 分层布局，环红色虚线、孤儿虚线，点击看影响面）
-6. `/checks` 一致性检查与冲突详情（分数、冲突表、环/孤儿、CSV 导出、管理员可确认/解决）
+5. `/graph` 依赖图（手写 SVG 分层布局，环红色虚线、孤儿虚线，点击看影响面；每条边标注来源版本，核对当前版本依赖切换）
+6. `/checks` 一致性检查与冲突详情（分数、冲突表、环/孤儿及其当前版本边口径、CSV 导出、管理员可确认/解决）
 
 ## 6. 快速启动
 
@@ -123,7 +126,7 @@ worker/{Dockerfile,entrypoint.sh,healthy.py}
 
 ## 11. 主要 API
 
-所有接口挂载在 `/api` 前缀下（Nginx 与后端直连一致）：`POST /auth/login` · `GET /auth/me` · `GET /metrics` · `GET /metrics/{id}` · `POST /metrics` · `PATCH /metrics/{id}` · `GET/POST /metrics/{id}/versions` · `PATCH /versions/{id}` · `GET /metrics/{id}/compare` · `POST /dsl/parse` · `GET /dependencies/graph` · `GET /metrics/{id}/impact` · `GET/POST /checks` · `GET /checks/latest` · `GET /checks/{id}` · `GET /checks/{id}/impact.csv` · `PATCH /findings/{id}` · `GET /teams` · `GET /audit/recent` · `GET /health`。
+所有接口挂载在 `/api` 前缀下（Nginx 与后端直连一致）：`POST /auth/login` · `GET /auth/me` · `GET /metrics` · `GET /metrics/{id}` · `POST /metrics` · `PATCH /metrics/{id}` · `GET/POST /metrics/{id}/versions` · `PATCH /versions/{id}` · `POST /versions/{id}/activate`（切换/回切当前版本并恢复其依赖集合）· `GET /metrics/{id}/compare` · `POST /dsl/parse` · `GET /dependencies/graph` · `GET /metrics/{id}/impact` · `GET/POST /checks` · `GET /checks/latest` · `GET /checks/{id}` · `GET /checks/{id}/impact.csv` · `PATCH /findings/{id}` · `GET /teams` · `GET /audit/recent` · `GET /health`。
 
 ## 12. 横切能力
 

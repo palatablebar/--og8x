@@ -24,6 +24,8 @@ export interface GraphEdge {
   relation: string
   note: string | null
   in_cycle: boolean
+  version_id: number | null
+  version_no: number | null
 }
 
 export interface CycleInfo {
@@ -63,4 +65,6 @@ export interface ImpactPayload {
   affected_metrics: { id: number; key: string; name: string; domain: string }[]
   boards: string[]
   board_count: number
+  version_id?: number | null
+  version_no?: number | null
 }

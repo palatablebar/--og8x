@@ -37,6 +37,7 @@
                 <div class="small">{{ finding.impact.boards.join('、') || '无' }}</div>
                 <div class="label mt-1">冲突说明</div>
                 <div class="small">{{ finding.detail }}</div>
+                <div class="hint mt-1">影响面按本批次运行时各指标当前生效版本的依赖集合计算。</div>
               </div>
             </td>
             <td><span class="badge" :class="finding.status === 'open' ? 'pending' : 'active'">{{ finding.status_label }}</span></td>

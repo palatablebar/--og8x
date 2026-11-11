@@ -3,7 +3,7 @@
     <PageHeader
       eyebrow="dependency graph · 拓扑与环"
       title="指标依赖图"
-      lede="后端用 Kahn 拓扑排序、Tarjan 强连通分量与孤儿检测计算出的依赖结构；前端手写 SVG 分层布局，不依赖图库。"
+      lede="后端按每个指标当前生效版本保存的依赖集合，用 Kahn 拓扑排序、Tarjan 强连通分量与孤儿检测计算；切换/回切版本后这里只反映当前版本的边。"
     >
       <template #actions>
         <button class="btn btn-sm" @click="load">重新计算</button>
@@ -73,6 +73,19 @@
                 <span class="mono">{{ metricKey(edge.from_id) }}</span> → {{ edge.to_table }}
               </li>
               <li v-if="!graph.table_edges.length" class="hint">暂未登记物理表依赖。</li>
+            </ul>
+          </section>
+
+          <section class="index-card is-flat">
+            <div class="eyebrow">edge provenance</div>
+            <h3 class="card-title mt-1">当前版本边来源核对</h3>
+            <p class="hint mt-1">每条 DSL 边都标注它来自源指标的哪个版本；回切历史版本后此列表随之变化。</p>
+            <ul class="clean-list mt-1">
+              <li v-for="edge in graph.edges" :key="`${edge.from_id}-${edge.to_id}-${edge.version_id}`" class="small">
+                <span class="mono">{{ edge.from_key }} → {{ edge.to_key }}</span>
+                <span class="faint"> · 来自 {{ edge.from_key }} 的 v{{ edge.version_no ?? '—' }}</span>
+              </li>
+              <li v-if="!graph.edges.length" class="hint">当前没有指标间依赖边。</li>
             </ul>
           </section>
         </aside>

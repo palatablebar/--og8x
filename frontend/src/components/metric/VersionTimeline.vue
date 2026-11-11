@@ -18,12 +18,34 @@
         <div class="mt-2">
           <TupleChips :tuple="version.tuple" />
         </div>
+        <div class="mt-2">
+          <span class="faint small">该版本依赖集合：</span>
+          <span v-if="version.dependencies.length" class="row" style="display: inline-flex; gap: 6px; flex-wrap: wrap">
+            <router-link
+              v-for="dep in version.dependencies"
+              :key="dep"
+              class="chip dep-chip"
+              :to="`/graph`"
+            >→ {{ dep }}</router-link>
+          </span>
+          <span v-else class="hint small">无 using 依赖</span>
+        </div>
         <p v-if="version.parse_error" class="error-notice mt-2">{{ version.parse_error }}</p>
         <div class="row-between mt-2">
           <span class="faint small">提交人 {{ version.created_by ?? '—' }}</span>
-          <router-link class="small link" :to="`/metrics/${version.metric_id}/dsl?version=${version.id}`">
-            在编辑器中打开 →
-          </router-link>
+          <div class="row" style="gap: 10px">
+            <button
+              v-if="canWrite && !version.is_current"
+              class="btn btn-sm"
+              :disabled="activatingId === version.id"
+              @click="$emit('activate', version)"
+            >
+              {{ activatingId === version.id ? '切换中…' : `切换为当前（回切 v${version.version_no}）` }}
+            </button>
+            <router-link class="small link" :to="`/metrics/${version.metric_id}/dsl?version=${version.id}`">
+              在编辑器中打开 →
+            </router-link>
+          </div>
         </div>
       </div>
     </li>
@@ -34,7 +56,8 @@
 import type { MetricVersion } from '../../types/metric'
 import TupleChips from './TupleChips.vue'
 
-defineProps<{ versions: MetricVersion[] }>()
+defineProps<{ versions: MetricVersion[]; canWrite: boolean; activatingId: number | null }>()
+defineEmits<{ (event: 'activate', version: MetricVersion): void }>()
 </script>
 
 <style scoped>
@@ -53,4 +76,5 @@ defineProps<{ versions: MetricVersion[] }>()
 .timeline-body { border: 1px solid var(--rule); border-left: 3px solid var(--sage); background: var(--paper-raised); padding: 12px 14px; }
 .version-no { font-family: var(--font-display); font-size: 18px; color: var(--ink-strong); }
 .link { color: var(--vermilion-deep); text-decoration: underline; text-underline-offset: 3px; }
+.dep-chip { text-decoration: none; }
 </style>

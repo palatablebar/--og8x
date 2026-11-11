@@ -32,7 +32,12 @@
       <div class="grid-2 mt-3">
         <section>
           <SectionHeading eyebrow="version history" title="版本历史与口径五元组" />
-          <VersionTimeline :versions="metric.versions" />
+          <VersionTimeline
+            :versions="metric.versions"
+            :can-write="auth.canWrite"
+            :activating-id="activatingId"
+            @activate="onActivate"
+          />
         </section>
 
         <aside class="stack">
@@ -43,7 +48,21 @@
               <TupleChips v-if="metric.current_version" :tuple="metric.current_version.tuple" />
             </div>
             <div class="card-rule"></div>
-            <div class="small muted">提交人 {{ metric.current_version?.created_by ?? '—' }} · {{ metric.current_version?.effective_from ?? '—' }}</div>
+            <div class="small muted">
+              当前版本 v{{ metric.dependencies.current_version_no ?? '—' }} ·
+              提交人 {{ metric.current_version?.created_by ?? '—' }} · {{ metric.current_version?.effective_from ?? '—' }}
+            </div>
+            <div class="card-rule"></div>
+            <div class="label">当前版本依赖集合（using）</div>
+            <div class="row mt-1" style="flex-wrap: wrap; gap: 6px">
+              <router-link
+                v-for="dep in metric.current_version?.dependencies ?? []"
+                :key="dep"
+                class="chip"
+                :to="`/graph`"
+              >→ {{ dep }}</router-link>
+              <span v-if="!(metric.current_version?.dependencies ?? []).length" class="hint">无 using 依赖</span>
+            </div>
             <div class="card-rule"></div>
             <div class="label">下游看板</div>
             <div class="row mt-1" style="flex-wrap: wrap; gap: 6px">
@@ -54,13 +73,14 @@
 
           <section class="index-card is-flat">
             <div class="eyebrow">dependency</div>
-            <h3 class="card-title mt-1">依赖关系</h3>
+            <h3 class="card-title mt-1">依赖关系（按当前版本 v{{ metric.dependencies.current_version_no ?? '—' }} 计算）</h3>
             <div class="dep-block mt-2">
               <div class="label">上游依赖（本指标依赖）</div>
               <ul class="clean-list mt-1">
                 <li v-for="ref in metric.dependencies.upstream" :key="ref.edge_id">
                   <router-link class="dep-link mono small" :to="`/metrics/${ref.id}`">{{ ref.key }}</router-link>
                   <span class="faint small"> {{ ref.name }}</span>
+                  <span v-if="ref.version_no" class="chip" style="margin-left: 6px">来自 v{{ ref.version_no }}</span>
                 </li>
                 <li v-for="table in metric.dependencies.tables" :key="table.edge_id" class="small faint">
                   物理表 {{ table.table }}
@@ -69,7 +89,7 @@
               </ul>
             </div>
             <div class="dep-block mt-2">
-              <div class="label">下游消费（谁依赖本指标）</div>
+              <div class="label">下游消费（谁的当前版本依赖本指标）</div>
               <ul class="clean-list mt-1">
                 <li v-for="ref in metric.dependencies.downstream" :key="ref.edge_id">
                   <router-link class="dep-link mono small" :to="`/metrics/${ref.id}`">{{ ref.key }}</router-link>
@@ -80,7 +100,7 @@
             </div>
           </section>
 
-          <ImpactPanel :impact="impact" :loading="impactLoading" title="口径变更影响面" />
+          <ImpactPanel :impact="impact" :loading="impactLoading" title="口径变更影响面（当前版本反向依赖闭包）" />
         </aside>
       </div>
 
@@ -114,16 +134,19 @@ import TupleChips from '../components/metric/TupleChips.vue'
 import VersionTimeline from '../components/metric/VersionTimeline.vue'
 import VersionCompareTable from '../components/metric/VersionCompareTable.vue'
 import ImpactPanel from '../components/dependency/ImpactPanel.vue'
-import { fetchMetric, compareVersions } from '../api/metric'
+import { fetchMetric, compareVersions, activateVersion } from '../api/metric'
 import { fetchImpact } from '../api/dependency'
-import type { MetricDetail, VersionCompare } from '../types/metric'
+import { useAuthStore } from '../stores/authStore'
+import type { MetricDetail, MetricVersion, VersionCompare } from '../types/metric'
 import type { ImpactPayload } from '../types/dependency'
 import type { ApiError } from '../types/api'
 
 const route = useRoute()
+const auth = useAuthStore()
 const metric = ref<MetricDetail | null>(null)
 const loading = ref(false)
 const error = ref<ApiError | null>(null)
+const activatingId = ref<number | null>(null)
 
 const versionA = ref(0)
 const versionB = ref(0)
@@ -174,6 +197,23 @@ async function loadImpact() {
     error.value = err as ApiError
   } finally {
     impactLoading.value = false
+  }
+}
+
+async function onActivate(version: MetricVersion) {
+  if (!metric.value) return
+  activatingId.value = version.id
+  error.value = null
+  try {
+    await activateVersion(version.id)
+    // Reload detail (current version + dependency switch) and the impact
+    // surface so the page proves the rollback restored the matching edges.
+    await loadMetric()
+    await loadImpact()
+  } catch (err) {
+    error.value = err as ApiError
+  } finally {
+    activatingId.value = null
   }
 }
 
